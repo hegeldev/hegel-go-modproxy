@@ -1,0 +1,14 @@
+name: integration-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run hermetic integration suite
+        run: scripts/integration-test.sh
