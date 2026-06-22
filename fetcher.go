@@ -99,7 +99,11 @@ func (sr seekReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if _, err := sr.r.Seek(off, io.SeekStart); err != nil {
 		return 0, err
 	}
-	return sr.r.Read(p)
+	// io.ReaderAt requires a short read to return a non-nil error; a bare Read
+	// may return fewer bytes than len(p) with err == nil, which archive/zip
+	// does not tolerate. io.ReadFull fills p fully or reports io.EOF /
+	// io.ErrUnexpectedEOF.
+	return io.ReadFull(sr.r, p)
 }
 
 func rewriteModule(f io.ReaderAt, size int64, from, to string) (z *os.File, err error) {
