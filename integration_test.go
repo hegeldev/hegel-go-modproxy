@@ -21,6 +21,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -78,7 +80,9 @@ func TestIntegrationLFSResolved(t *testing.T) {
 	t.Setenv("GONOSUMDB", "*")
 	t.Setenv("GOMODCACHE", t.TempDir())
 	t.Setenv("GOCACHE", t.TempDir())
-	t.Setenv("GOFLAGS", "")
+	// -modcacherw leaves the module cache writable so t.TempDir's RemoveAll can
+	// clean it up; go otherwise writes cache entries read-only.
+	t.Setenv("GOFLAGS", "-modcacherw")
 
 	// newProxy uses the production module map; the vanity/upstream consts above
 	// mirror its single entry (hegel.dev/go/hegel -> github.com/hegeldev/hegel-go).
@@ -91,16 +95,47 @@ func TestIntegrationLFSResolved(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
+	// A stand-in for the hegel.dev vanity server. The client resolves the module
+	// the way the real world does: GOPROXY=direct makes `go` fetch
+	// https://hegel.dev/go/hegel?go-get=1 and follow the go-import meta tag,
+	// rather than being handed the proxy URL directly.
+	//
+	// `go` can't reach the real hegel.dev, so HTTP(S)_PROXY routes that lookup
+	// here. This handler doubles as a forward proxy: it refuses the CONNECT that
+	// go's https-first attempt makes (so go falls back to plain HTTP), then
+	// answers the proxied GET with a meta tag pointing module downloads ("mod")
+	// at our proxy. The root echoes the requested path, so a disallowed module
+	// (hegel.dev/go/forbidden) also routes to the proxy and is rejected there,
+	// exercising the real allow-list rather than failing at resolution.
+	vanitySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect {
+			http.Error(w, "no CONNECT", http.StatusBadGateway)
+			return
+		}
+		root := r.Host + r.URL.Path // e.g. hegel.dev/go/hegel
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<!DOCTYPE html><meta name="go-import" content="%s mod %s">`, root, srv.URL)
+	}))
+	t.Cleanup(vanitySrv.Close)
+
 	clientEnv := mergeEnv(map[string]string{
-		"HOME":       home,
-		"GOPROXY":    srv.URL,
-		"GOSUMDB":    "off",
-		"GONOSUMDB":  "*",
-		"GOPRIVATE":  "",
-		"GOMODCACHE": t.TempDir(),
-		"GOCACHE":    t.TempDir(),
-		"GOPATH":     t.TempDir(),
-		"GOFLAGS":    "",
+		"HOME": home,
+		// Resolve via go-import meta tags (see vanitySrv) instead of a direct
+		// GOPROXY. GOINSECURE lets the hegel.dev lookup fall back to plain HTTP;
+		// HTTP(S)_PROXY routes it to vanitySrv; NO_PROXY keeps the subsequent
+		// proxy fetch (loopback) direct rather than bouncing through vanitySrv.
+		"GOPROXY":     "direct",
+		"GOINSECURE":  "hegel.dev",
+		"HTTP_PROXY":  vanitySrv.URL,
+		"HTTPS_PROXY": vanitySrv.URL,
+		"NO_PROXY":    "127.0.0.1",
+		"GOSUMDB":     "off",
+		"GONOSUMDB":   "*",
+		"GOPRIVATE":   "",
+		"GOMODCACHE":  t.TempDir(),
+		"GOCACHE":     t.TempDir(),
+		"GOPATH":      t.TempDir(),
+		"GOFLAGS":     "-modcacherw", // keep the cache writable for t.TempDir cleanup
 	})
 
 	t.Run("latest resolves and smudges LFS", func(t *testing.T) {
