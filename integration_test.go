@@ -12,10 +12,13 @@ package main
 //   - The proxy is constructed in-process and served via httptest.
 //   - The real `go` binary downloads the vanity module through the proxy and we
 //     assert the git-lfs asset arrives smudged (real content, not a pointer).
+//   - A local checksum-database sentinel asserts the proxy never verifies the
+//     upstream module against a checksum database (which would leak the private
+//     repo into the public transparency log).
 //
-// It only runs under `-tags=integration` and skips unless git, git-lfs and go
-// are present (i.e. in practice it runs inside the test container, since the
-// proxy requires git-lfs at runtime anyway).
+// It skips unless git, git-lfs and go are present (i.e. in practice it runs
+// inside the test container, since the proxy requires git-lfs at runtime
+// anyway).
 
 import (
 	"bytes"
@@ -28,12 +31,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
 const (
 	vanity   = "hegel.dev/go/hegel"
 	upstream = "github.com/hegeldev/hegel-go"
+
+	// A throwaway checksum-database verifier key (generated for this test only,
+	// never the real sum.golang.org key). It lets us point the server-side
+	// GOSUMDB at a local sentinel so any attempt by the proxy to verify the
+	// upstream module against a checksum database is recorded and refused.
+	sumdbKey = "lfsproxy-test-sumdb+d82fdfef+Ac0wBCLSg/823lSLXD3ZHtjdKZJXxXOYpO0d+Zfj+Fyn"
 )
 
 func TestIntegrationLFSResolved(t *testing.T) {
@@ -72,12 +82,32 @@ func TestIntegrationLFSResolved(t *testing.T) {
 	// newProxy builds its GoFetcher from a snapshot of os.Environ(), so
 	// configure the fetch environment in the process via t.Setenv and let the
 	// real constructor pick it up, rather than reaching past it to overwrite
-	// fetcher.Env. (GOPRIVATE is set by newLFSFetcher, from the module map.)
+	// fetcher.Env. (GOPROXY=direct and GOSUMDB=off are pinned by newLFSFetcher.)
+	//
+	// A checksum-database sentinel. The proxy must never create GOSUMDB entries
+	// for the upstream module it fetches: doing so would publish the private
+	// upstream repo into the public transparency log. This server records any
+	// request and fails it, so a single hit both records the violation and
+	// breaks the download. With the proxy configured correctly it is never
+	// contacted.
+	sumdb := &sumdbRecorder{}
+	sumdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sumdb.record(r.URL.Path)
+		http.Error(w, "proxy must not contact the checksum database", http.StatusInternalServerError)
+	}))
+	t.Cleanup(sumdbSrv.Close)
+
 	t.Setenv("HOME", home)
 	t.Setenv("GIT_CONFIG_GLOBAL", globalCfg)
-	t.Setenv("GOPROXY", "direct")
-	t.Setenv("GOSUMDB", "off")
-	t.Setenv("GONOSUMDB", "*")
+	// Deliberately do NOT set GOPROXY=direct or GOSUMDB=off here: newProxy must
+	// provide those guarantees itself (see newLFSFetcher). Instead, point GOSUMDB
+	// at our own local sentinel (never the real sum.golang.org) and leave
+	// GONOSUMDB unset so nothing excludes the upstream repo that is actually
+	// fetched. If a regression re-enabled checksum-db verification for that fetch,
+	// the sentinel below would be hit. With GOSUMDB=off pinned by newLFSFetcher,
+	// this value is overridden and no checksum-db client is ever built.
+	t.Setenv("GOSUMDB", sumdbKey+" "+sumdbSrv.URL)
+	t.Setenv("GONOSUMDB", "")
 	t.Setenv("GOMODCACHE", t.TempDir())
 	t.Setenv("GOCACHE", t.TempDir())
 	// -modcacherw leaves the module cache writable so t.TempDir's RemoveAll can
@@ -162,6 +192,12 @@ func TestIntegrationLFSResolved(t *testing.T) {
 		if !bytes.Equal(got, asset) {
 			t.Fatalf("model.bin content mismatch: got %d bytes, want %d", len(got), len(asset))
 		}
+		// The client computes and records its own checksum for the vanity module
+		// (the go.sum entry the proxy must never create on its behalf). Its
+		// presence confirms client-side checksumming still works.
+		if mod.Sum == "" {
+			t.Errorf("client recorded no checksum (Sum empty); want a go.sum entry for %s", vanity)
+		}
 	})
 
 	t.Run("pinned version resolves", func(t *testing.T) {
@@ -181,6 +217,29 @@ func TestIntegrationLFSResolved(t *testing.T) {
 			t.Fatalf("expected failure for disallowed module, got success:\n%s", out)
 		}
 	})
+
+	if hits := sumdb.hits(); len(hits) != 0 {
+		t.Fatalf("proxy contacted the checksum database %d time(s); it must never do so for upstream fetches:\n%s",
+			len(hits), strings.Join(hits, "\n"))
+	}
+}
+
+// sumdbRecorder records the request paths a checksum-database sentinel receives.
+type sumdbRecorder struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (r *sumdbRecorder) record(path string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seen = append(r.seen, path)
+}
+
+func (r *sumdbRecorder) hits() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.seen...)
 }
 
 // buildUpstream creates a git repo at dir standing in for the upstream GitHub
@@ -217,13 +276,15 @@ func buildUpstream(t *testing.T, dir string, asset []byte, env []string) {
 }
 
 type downloaded struct {
-	Path    string
-	Version string
-	Info    string
-	GoMod   string
-	Zip     string
-	Dir     string
-	Error   string
+	Path     string
+	Version  string
+	Info     string
+	GoMod    string
+	Zip      string
+	Dir      string
+	Sum      string // h1: hash the client computed and would record in go.sum
+	GoModSum string
+	Error    string
 }
 
 func goModDownload(t *testing.T, env []string, module string) downloaded {

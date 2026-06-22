@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -22,12 +20,18 @@ type LFSFetcher struct {
 }
 
 func newLFSFetcher(modules map[string]string) *LFSFetcher {
-	goprivate := strings.Join(slices.Collect(maps.Keys(modules)), ",")
-
 	return &LFSFetcher{
 		&goproxy.GoFetcher{
 			Env: append(os.Environ(),
-				"GOPRIVATE="+goprivate,
+				// Fetch upstream repos directly via git so the git-lfs smudge
+				// filter runs (a public proxy would serve unsmudged pointers).
+				"GOPROXY=direct",
+				// Never consult the checksum database for upstream fetches.
+				// Doing so would publish the private upstream module into the
+				// public transparency log. We only serve allow-listed, vanity-
+				// mapped modules; the client still records its own go.sum
+				// entries for the vanity path, which is what we want.
+				"GOSUMDB=off",
 			),
 		},
 		modules,
