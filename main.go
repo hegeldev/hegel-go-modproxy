@@ -18,8 +18,22 @@ func run() error {
 		port = "3000"
 	}
 
+	proxy, cleanup, err := newProxy()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	log.Printf("Go module proxy listening on :%s", port)
+	return http.ListenAndServe(":"+port, proxy)
+}
+
+// newProxy builds the module-proxy handler together with a cleanup function
+// that releases its cache. It first verifies git-lfs is installed and
+// configured, since the proxy relies on the smudge filter at fetch time.
+func newProxy() (http.Handler, func() error, error) {
 	if err := exec.Command("git", "lfs", "version").Run(); err != nil {
-		return fmt.Errorf("git lfs: %w", err)
+		return nil, nil, fmt.Errorf("git lfs: %w", err)
 	}
 
 	// `git config get` exits non-zero when the key is unset, which is exactly
@@ -27,14 +41,13 @@ func run() error {
 	// and empty output as "not configured" so the actionable message is reached.
 	out, _ := exec.Command("git", "config", "get", "filter.lfs.process").Output()
 	if strings.TrimSpace(string(out)) == "" {
-		return errors.New("git-lfs is not configured; run `git lfs install`")
+		return nil, nil, errors.New("git-lfs is not configured; run `git lfs install`")
 	}
 
 	c, err := newCacher()
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	defer c.Close()
 
 	proxy := &goproxy.Goproxy{
 		Fetcher: newLFSFetcher(map[string]string{
@@ -42,9 +55,7 @@ func run() error {
 		}),
 		Cacher: c,
 	}
-
-	log.Printf("Go module proxy listening on :%s", port)
-	return http.ListenAndServe(":"+port, proxy)
+	return proxy, c.Close, nil
 }
 
 func main() {

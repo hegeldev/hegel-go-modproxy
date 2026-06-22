@@ -27,8 +27,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/goproxy/goproxy"
 )
 
 const (
@@ -64,29 +62,33 @@ func TestIntegrationLFSResolved(t *testing.T) {
 
 	buildUpstream(t, upRepo, asset, gitEnv)
 
-	// Stand up the proxy in-process. The server-side fetcher must fetch the
-	// upstream module directly via git (GOPROXY=direct) so git-lfs smudging
-	// happens; insteadOf then keeps that fetch on the local filesystem.
-	f := newLFSFetcher(map[string]string{vanity: upstream})
-	f.fetcher.Env = mergeEnv(map[string]string{
-		"HOME":              home,
-		"GIT_CONFIG_GLOBAL": globalCfg,
-		"GOPROXY":           "direct",
-		"GOSUMDB":           "off",
-		"GONOSUMDB":         "*",
-		"GOPRIVATE":         vanity,
-		"GOMODCACHE":        t.TempDir(),
-		"GOCACHE":           t.TempDir(),
-		"GOFLAGS":           "",
-	})
+	// Stand up the proxy in-process via the same newProxy() main() uses. The
+	// server-side fetcher must fetch the upstream module directly via git
+	// (GOPROXY=direct) so git-lfs smudging happens; insteadOf then keeps that
+	// fetch on the local filesystem.
+	//
+	// newProxy builds its GoFetcher from a snapshot of os.Environ(), so
+	// configure the fetch environment in the process via t.Setenv and let the
+	// real constructor pick it up, rather than reaching past it to overwrite
+	// fetcher.Env. (GOPRIVATE is set by newLFSFetcher, from the module map.)
+	t.Setenv("HOME", home)
+	t.Setenv("GIT_CONFIG_GLOBAL", globalCfg)
+	t.Setenv("GOPROXY", "direct")
+	t.Setenv("GOSUMDB", "off")
+	t.Setenv("GONOSUMDB", "*")
+	t.Setenv("GOMODCACHE", t.TempDir())
+	t.Setenv("GOCACHE", t.TempDir())
+	t.Setenv("GOFLAGS", "")
 
-	c, err := newCacher()
+	// newProxy uses the production module map; the vanity/upstream consts above
+	// mirror its single entry (hegel.dev/go/hegel -> github.com/hegeldev/hegel-go).
+	handler, cleanup, err := newProxy()
 	if err != nil {
-		t.Fatalf("newCacher: %v", err)
+		t.Fatalf("newProxy: %v", err)
 	}
-	t.Cleanup(func() { _ = c.Close() })
+	t.Cleanup(func() { _ = cleanup() })
 
-	srv := httptest.NewServer(&goproxy.Goproxy{Fetcher: f, Cacher: c})
+	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
 	clientEnv := mergeEnv(map[string]string{
