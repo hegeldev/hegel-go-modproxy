@@ -1,0 +1,28 @@
+version: 2
+
+updates:
+  # Go module dependencies: security fixes only, no routine version bumps.
+  # open-pull-requests-limit: 0 disables version updates; security updates
+  # (enabled via repo Settings -> Code security) are unaffected by this limit.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+
+  # GitHub Actions (keeps the SHA-pinned actions patched): security fixes only.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+
+  # Docker base image: allow full version updates so we get Go version bumps,
+  # including major ones (e.g. golang:1.26 -> golang:1.27). Restricted to the
+  # golang image so no other base image gets bumped.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    allow:
+      - dependency-name: "golang"
