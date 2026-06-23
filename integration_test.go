@@ -218,6 +218,20 @@ func TestIntegrationLFSResolved(t *testing.T) {
 		}
 	})
 
+	t.Run("disallowed module returns 404 so go falls through", func(t *testing.T) {
+		// A module the proxy does not serve must return 404 (not 500): only then
+		// does `go` fall through to the next GOPROXY entry, which is how
+		// transitive public dependencies get resolved by the public proxy.
+		resp, err := http.Get(srv.URL + "/hegel.dev/go/forbidden/@v/list")
+		if err != nil {
+			t.Fatalf("GET forbidden module: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("status = %d, want %d (404 enables GOPROXY fall-through)", resp.StatusCode, http.StatusNotFound)
+		}
+	})
+
 	if hits := sumdb.hits(); len(hits) != 0 {
 		t.Fatalf("proxy contacted the checksum database %d time(s); it must never do so for upstream fetches:\n%s",
 			len(hits), strings.Join(hits, "\n"))

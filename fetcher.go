@@ -3,9 +3,9 @@ package main
 import (
 	"archive/zip"
 	"context"
-	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -38,18 +38,31 @@ func newLFSFetcher(modules map[string]string) *LFSFetcher {
 	}
 }
 
-func (f *LFSFetcher) Query(ctx context.Context, path, query string) (string, time.Time, error) {
-	path, ok := f.Modules[path]
+// lookup resolves a vanity module path to its upstream git repository. Modules
+// outside the allow-list return an error wrapping fs.ErrNotExist, which goproxy
+// renders as a 404 so the go command falls through to the next proxy in its
+// GOPROXY list (e.g. the public proxy for transitive dependencies). A bare
+// error would render as a fatal 500 instead.
+func (f *LFSFetcher) lookup(path string) (string, error) {
+	repo, ok := f.Modules[path]
 	if !ok {
-		return "", time.Time{}, errors.New("module is not allowed")
+		return "", fmt.Errorf("module %q is not served by this proxy: %w", path, fs.ErrNotExist)
+	}
+	return repo, nil
+}
+
+func (f *LFSFetcher) Query(ctx context.Context, path, query string) (string, time.Time, error) {
+	path, err := f.lookup(path)
+	if err != nil {
+		return "", time.Time{}, err
 	}
 	return f.fetcher.Query(ctx, path, query)
 }
 
 func (f *LFSFetcher) List(ctx context.Context, path string) ([]string, error) {
-	path, ok := f.Modules[path]
-	if !ok {
-		return nil, errors.New("module is not allowed")
+	path, err := f.lookup(path)
+	if err != nil {
+		return nil, err
 	}
 	return f.fetcher.List(ctx, path)
 }
@@ -61,9 +74,9 @@ func (f *LFSFetcher) Download(ctx context.Context, orig, version string) (info, 
 		}
 	}
 
-	path, ok := f.Modules[orig]
-	if !ok {
-		return nil, nil, nil, errors.New("module is not allowed")
+	path, err := f.lookup(orig)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
 	info, mod, zipFile, err = f.fetcher.Download(ctx, path, version)
