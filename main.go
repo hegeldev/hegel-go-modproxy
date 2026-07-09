@@ -44,10 +44,7 @@ func newProxy() (http.Handler, func() error, error) {
 		return nil, nil, errors.New("git-lfs is not configured; run `git lfs install`")
 	}
 
-	c, err := newCacher()
-	if err != nil {
-		return nil, nil, err
-	}
+	c := newCacher()
 
 	proxy := &goproxy.Goproxy{
 		Fetcher: newLFSFetcher(map[string]string{
