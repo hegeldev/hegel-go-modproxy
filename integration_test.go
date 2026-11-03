@@ -4,8 +4,8 @@ package main
 // requires no internet access:
 //
 //   - A throwaway git repository stands in for the upstream GitHub repo
-//     (github.com/hegeldev/hegel-go). It contains a git-lfs tracked asset with
-//     known bytes.
+//     (github.com/hegeldev/hegel), with the Go module in its frontends/go
+//     subdirectory. It contains a git-lfs tracked asset with known bytes.
 //   - git's url.<base>.insteadOf rewrites the GitHub URL to a file:// path
 //     pointing at that repo, so the proxy's direct module fetch never leaves
 //     the machine.
@@ -36,8 +36,12 @@ import (
 )
 
 const (
-	vanity   = "hegel.dev/go/hegel"
-	upstream = "github.com/hegeldev/hegel-go"
+	vanity = "hegel.dev/go/hegel"
+	// upstreamRepo is the git repository; upstream is the Go module inside it,
+	// living in the upstreamDir subdirectory and tagged as upstreamDir/vX.Y.Z.
+	upstreamRepo = "github.com/hegeldev/hegel"
+	upstreamDir  = "frontends/go"
+	upstream     = upstreamRepo + "/" + upstreamDir
 
 	// A throwaway checksum-database verifier key (generated for this test only,
 	// never the real sum.golang.org key). It lets us point the server-side
@@ -65,7 +69,7 @@ func TestIntegrationLFSResolved(t *testing.T) {
 		"\tname = integration\n"+
 		"\temail = integration@example.com\n"+
 		"[url \"file://"+upRepo+"\"]\n"+
-		"\tinsteadOf = https://"+upstream+"\n")
+		"\tinsteadOf = https://"+upstreamRepo+"\n")
 
 	gitEnv := mergeEnv(map[string]string{
 		"HOME":              home,
@@ -115,7 +119,7 @@ func TestIntegrationLFSResolved(t *testing.T) {
 	t.Setenv("GOFLAGS", "-modcacherw")
 
 	// newProxy uses the production module map; the vanity/upstream consts above
-	// mirror its single entry (hegel.dev/go/hegel -> github.com/hegeldev/hegel-go).
+	// mirror its single entry (hegel.dev/go/hegel -> github.com/hegeldev/hegel/frontends/go).
 	handler, cleanup, err := newProxy()
 	if err != nil {
 		t.Fatalf("newProxy: %v", err)
@@ -257,7 +261,8 @@ func (r *sumdbRecorder) hits() []string {
 }
 
 // buildUpstream creates a git repo at dir standing in for the upstream GitHub
-// repository: an LFS-tracked asset plus two tagged versions.
+// monorepo: a Go module in the upstreamDir subdirectory with an LFS-tracked
+// asset, plus two versions tagged with the subdirectory prefix.
 func buildUpstream(t *testing.T, dir string, asset []byte, env []string) {
 	t.Helper()
 
@@ -273,20 +278,24 @@ func buildUpstream(t *testing.T, dir string, asset []byte, env []string) {
 
 	git("init", "-q", "-b", "main")
 	git("lfs", "track", "*.bin")
-	write(t, filepath.Join(dir, "go.mod"), "module "+upstream+"\n\ngo 1.25.0\n")
-	write(t, filepath.Join(dir, "hegel.go"), "package hegel\n\n// Greeting is served from the upstream fixture.\nfunc Greeting() string { return \"owl of minerva\" }\n")
-	if err := os.WriteFile(filepath.Join(dir, "model.bin"), asset, 0o644); err != nil {
+	modDir := filepath.Join(dir, upstreamDir)
+	if err := os.MkdirAll(modDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", modDir, err)
+	}
+	write(t, filepath.Join(modDir, "go.mod"), "module "+upstream+"\n\ngo 1.25.0\n")
+	write(t, filepath.Join(modDir, "hegel.go"), "package hegel\n\n// Greeting is served from the upstream fixture.\nfunc Greeting() string { return \"owl of minerva\" }\n")
+	if err := os.WriteFile(filepath.Join(modDir, "model.bin"), asset, 0o644); err != nil {
 		t.Fatalf("write model.bin: %v", err)
 	}
 	git("add", "-A")
 	git("commit", "-qm", "v1.0.0")
-	git("tag", "v1.0.0")
+	git("tag", upstreamDir+"/v1.0.0")
 
 	// A second version so @latest has something to choose.
-	write(t, filepath.Join(dir, "hegel.go"), "package hegel\n\n// Greeting is served from the upstream fixture.\nfunc Greeting() string { return \"owl of minerva flies at dusk\" }\n")
+	write(t, filepath.Join(modDir, "hegel.go"), "package hegel\n\n// Greeting is served from the upstream fixture.\nfunc Greeting() string { return \"owl of minerva flies at dusk\" }\n")
 	git("add", "-A")
 	git("commit", "-qm", "v1.1.0")
-	git("tag", "v1.1.0")
+	git("tag", upstreamDir+"/v1.1.0")
 }
 
 type downloaded struct {

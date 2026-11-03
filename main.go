@@ -48,7 +48,7 @@ func newProxy() (http.Handler, func() error, error) {
 
 	proxy := &goproxy.Goproxy{
 		Fetcher: newLFSFetcher(map[string]string{
-			"hegel.dev/go/hegel": "github.com/hegeldev/hegel-go",
+			"hegel.dev/go/hegel": "github.com/hegeldev/hegel/frontends/go",
 		}),
 		Cacher: c,
 	}
