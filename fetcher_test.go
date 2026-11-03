@@ -37,7 +37,7 @@ func materialize(t *testing.T, f *os.File) string {
 
 func TestRewriteModule(t *testing.T) {
 	const (
-		from    = "github.com/hegeldev/hegel-go"
+		from    = "github.com/hegeldev/hegel/frontends/go"
 		to      = "hegel.dev/go/hegel"
 		version = "v1.0.0"
 	)
@@ -68,7 +68,7 @@ func TestRewriteModule(t *testing.T) {
 
 func TestRewriteModuleRejectsUnexpectedPrefix(t *testing.T) {
 	const (
-		from    = "github.com/hegeldev/hegel-go"
+		from    = "github.com/hegeldev/hegel/frontends/go"
 		to      = "hegel.dev/go/hegel"
 		version = "v1.0.0"
 	)
